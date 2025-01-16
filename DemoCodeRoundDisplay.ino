@@ -4,8 +4,28 @@
 //#include "demos/lv_demos.h"
 #include <LovyanGFX.hpp>
 #include "CST816D.h"
+#include "secrets.h"
+#include <WiFi.h>
+#include <AsyncMqttClient.h>
 
 #define LV_BUILD_EXAMPLES 0
+
+// Raspberry Pi Mosquitto MQTT Broker
+#define MQTT_HOST IPAddress(192, 168, 2, 209)
+
+// For a cloud MQTT broker, type the domain name
+//#define MQTT_HOST "example.com"
+#define MQTT_PORT 1883
+
+// Temperature MQTT Topics
+#define MQTT_PUB_Vibration_Motor_S  "esp32/VibrationMotor/state"
+#define MQTT_PUB_Vibration_Motor_C "esp32/VibrationMotor/command"
+#define mqtt_username  "taste_the_code"
+#define mqtt_password  "test1234"
+
+AsyncMqttClient mqttClient;
+TimerHandle_t mqttReconnectTimer;
+TimerHandle_t wifiReconnectTimer;
 
 // I2C pins
 #define I2C_SDA 4
@@ -19,6 +39,14 @@
 
 // Buffer size definition
 #define buf_size 120
+
+static lv_obj_t * meter;
+static lv_obj_t * data_label;
+static lv_meter_indicator_t * needle_line;
+
+// Global variables to hold current temperature and humidity
+static float current_temperature = 0.0;
+static float current_humidity = 0.0;
 
 // LGFX class definition for display device interface
 class LGFX : public lgfx::LGFX_Device
@@ -174,13 +202,84 @@ void set_pin_io(uint8_t pin_number, bool value) {
   Serial.println(rxdata, HEX);
 }
 
-static lv_obj_t * meter;
-static lv_obj_t * data_label;
-static lv_meter_indicator_t * needle_line;
+void connectToWifi() {
+  Serial.println("Connecting to Wi-Fi...");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+}
 
-// Global variables to hold current temperature and humidity
-static float current_temperature = 0.0;
-static float current_humidity = 0.0;
+void connectToMqtt() {
+  Serial.println("Connecting to MQTT...");
+  mqttClient.connect();
+}
+
+void WiFiEvent(WiFiEvent_t event) {
+  Serial.printf("[WiFi-event] event: %d\n", event);
+  switch (event) {
+    case SYSTEM_EVENT_STA_GOT_IP:
+      Serial.println("WiFi connected");
+      Serial.println("IP address: ");
+      Serial.println(WiFi.localIP());
+      connectToMqtt();
+      break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+      Serial.println("WiFi lost connection");
+      xTimerStop(mqttReconnectTimer, 0); // ensure we don't reconnect to MQTT while reconnecting to Wi-Fi
+      xTimerStart(wifiReconnectTimer, 0);
+      break;
+  }
+}
+
+void onMqttConnect(bool sessionPresent) {
+  Serial.println("Connected to MQTT.");
+  Serial.print("Session present: ");
+  Serial.println(sessionPresent);
+  uint16_t packetIdSub = mqttClient.subscribe(MQTT_PUB_Vibration_Motor_C, 2);
+  Serial.print("Subscribing at QoS 2, packetId: ");
+  Serial.println(packetIdSub);
+}
+
+void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+  Serial.println("Disconnected from MQTT.");
+  if (WiFi.isConnected()) {
+    xTimerStart(mqttReconnectTimer, 0);
+  }
+}
+
+void onMqttSubscribe(uint16_t packetId, uint8_t qos) {
+  Serial.println("Subscribe acknowledged.");
+  Serial.print("  packetId: ");
+  Serial.println(packetId);
+  Serial.print("  qos: ");
+  Serial.println(qos);
+}
+
+void onMqttUnsubscribe(uint16_t packetId) {
+  Serial.println("Unsubscribe acknowledged.");
+  Serial.print("  packetId: ");
+  Serial.println(packetId);
+}
+
+
+void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total)
+{
+  Serial.println("Publish received.");
+  for (int i = 0; i < len; i++) {
+    Serial.print((char) payload[i]);
+  }
+  Serial.println("");
+  if (strncmp(payload, "ON", 2) == 0) {
+    mqttClient.publish(MQTT_PUB_Vibration_Motor_S, 0, true, "ON");
+  }
+  if (strncmp(payload, "OFF", 3) == 0) {
+    mqttClient.publish(MQTT_PUB_Vibration_Motor_S, 0, true, "OFF");
+  }
+}
+
+void onMqttPublish(uint16_t packetId) {
+  Serial.print("Publish acknowledged.");
+  Serial.print("  packetId: ");
+  Serial.println(packetId);
+}
 
 #ifdef __has_include
     #if __has_include("lvgl.h")
@@ -531,6 +630,22 @@ void setup()
   set_pin_io(3, true);
   set_pin_io(4, true);
   set_pin_io(2, true);
+
+  mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
+  wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
+  WiFi.onEvent(WiFiEvent);
+  mqttClient.onConnect(onMqttConnect);
+  mqttClient.onDisconnect(onMqttDisconnect);
+  mqttClient.onSubscribe(onMqttSubscribe);
+  mqttClient.onUnsubscribe(onMqttUnsubscribe);
+  mqttClient.onMessage(onMqttMessage);
+  mqttClient.onPublish(onMqttPublish);
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  // If your broker requires authentication (username and password), set them below
+  mqttClient.setCredentials(mqtt_username, mqtt_password);
+
+  connectToWifi();
+
   //turn off vibration motor
   set_pin_io(0, false);
   tft.init();
