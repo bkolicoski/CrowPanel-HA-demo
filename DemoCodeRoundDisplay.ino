@@ -1,7 +1,6 @@
 #define LGFX_USE_V1
 #include "Arduino.h"
 #include <lvgl.h>
-//#include "demos/lv_demos.h"
 #include <LovyanGFX.hpp>
 #include "CST816D.h"
 #include "secrets.h"
@@ -20,8 +19,8 @@
 // Temperature MQTT Topics
 #define MQTT_PUB_Vibration_Motor_S  "esp32/VibrationMotor/state"
 #define MQTT_PUB_Vibration_Motor_C "esp32/VibrationMotor/command"
-#define mqtt_username  "taste_the_code"
-#define mqtt_password  "test1234"
+#define temperature_topic "home/living_room_sensor/temperature"
+#define humidity_topic "home/living_room_sensor/humidity"
 
 AsyncMqttClient mqttClient;
 TimerHandle_t mqttReconnectTimer;
@@ -236,6 +235,12 @@ void onMqttConnect(bool sessionPresent) {
   uint16_t packetIdSub = mqttClient.subscribe(MQTT_PUB_Vibration_Motor_C, 2);
   Serial.print("Subscribing at QoS 2, packetId: ");
   Serial.println(packetIdSub);
+  packetIdSub = mqttClient.subscribe(temperature_topic, 2);
+  Serial.print("Subscribing at QoS 2, packetId: ");
+  Serial.println(packetIdSub);
+  packetIdSub = mqttClient.subscribe(humidity_topic, 2);
+  Serial.print("Subscribing at QoS 2, packetId: ");
+  Serial.println(packetIdSub);
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
@@ -263,15 +268,44 @@ void onMqttUnsubscribe(uint16_t packetId) {
 void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total)
 {
   Serial.println("Publish received.");
+
+  Serial.print("Topic: ");
+  Serial.println(topic);
+
+  // Convert payload to a null-terminated string for easier processing
+  char message[len + 1];
+  strncpy(message, payload, len);
+  message[len] = '\0';
+
+  // Check for temperature topic
+  if (strcmp(topic, "home/living_room_sensor/temperature") == 0) {
+    current_temperature = atof(message);  // Convert message to float
+    Serial.print("Temperature: ");
+    Serial.println(current_temperature);
+    set_meter_value(current_temperature);
+  
+  }
+  
+  // Check for humidity topic
+  if (strcmp(topic, "home/living_room_sensor/humidity") == 0) {
+    current_humidity = atof(message);  // Convert message to float
+    Serial.print("Humidity: ");
+    Serial.println(current_humidity);
+  }
+  update_data_label();
+
   for (int i = 0; i < len; i++) {
     Serial.print((char) payload[i]);
   }
   Serial.println("");
+
   if (strncmp(payload, "ON", 2) == 0) {
     mqttClient.publish(MQTT_PUB_Vibration_Motor_S, 0, true, "ON");
+    set_pin_io(0, true);
   }
   if (strncmp(payload, "OFF", 3) == 0) {
     mqttClient.publish(MQTT_PUB_Vibration_Motor_S, 0, true, "OFF");
+    set_pin_io(0, false);
   }
 }
 
@@ -599,7 +633,7 @@ void lv_example_meter_1(void)
 
     // Create the label for temperature and humidity information
     data_label = lv_label_create(circle_container); // Attach label to the container
-    lv_label_set_text(data_label, "0.00°C\n0.00%");
+    lv_label_set_text(data_label, "0.0°C\n0.0%");
     lv_obj_center(data_label); // Center the label within the circular container
 
     static lv_style_t label_style;
@@ -616,7 +650,7 @@ void lv_example_meter_1(void)
     lv_img_set_src(img_logo, &logo); // Set the image source to your image descriptor
 
     // Align the logo image at the bottom center of the screen
-    lv_obj_align(img_logo, LV_ALIGN_BOTTOM_MID, 0, -10); // Adjust the offsets as necessary
+    lv_obj_align(img_logo, LV_ALIGN_BOTTOM_MID, 0, -5); // Adjust the offsets as necessary
 }
 
 void setup()
@@ -648,6 +682,7 @@ void setup()
 
   //turn off vibration motor
   set_pin_io(0, false);
+
   tft.init();
   tft.initDMA();
   tft.startWrite();
@@ -692,14 +727,14 @@ void setup()
   lv_example_meter_1();
 #endif
   Serial.println("Setup done");
-  set_random_values();
+  //set_random_values();
 }
 
 // Function to update the label with the temperature and humidity values
 void update_data_label() {
     // Create a string to store the formatted text
     char buf[32];
-    snprintf(buf, sizeof(buf), "%.2f°C\n%.2f%%", current_temperature, current_humidity);
+    snprintf(buf, sizeof(buf), "%.1f°C\n%.1f%%", current_temperature, current_humidity);
     lv_label_set_text(data_label, buf); // Set the text of the label
 }
 
@@ -737,18 +772,18 @@ void loop()
   lv_timer_handler(); /* let the GUI do its work */
   delay(5);
 
-  // Variable to store the last time the humidity was updated
-    static unsigned long last_update_time = 0;
+  // // Variable to store the last time the humidity was updated
+  //   static unsigned long last_update_time = 0;
 
-    // Current time in milliseconds
-    unsigned long current_time = millis();
+  //   // Current time in milliseconds
+  //   unsigned long current_time = millis();
 
-    // Check if 3000 milliseconds (3 seconds) have passed since last update
-    if (current_time - last_update_time >= 3000) {
-        // Update the stored time for the next interval
-        last_update_time = current_time;
+  //   // Check if 3000 milliseconds (3 seconds) have passed since last update
+  //   if (current_time - last_update_time >= 3000) {
+  //       // Update the stored time for the next interval
+  //       last_update_time = current_time;
 
-        //set random values
-        set_random_values();
-    }
+  //       //set random values
+  //       set_random_values();
+  //   }
 }
